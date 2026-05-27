@@ -191,6 +191,9 @@ console.log('done');
 ---
 
 ## 5. Desktop Wallpaper
+> Set via GUI: Right-click desktop → Desktop Preferences → select wallpaper image
+
+Wallpaper image location:
 ```bash
 mkdir -p ~/.config/autostart
 cat > ~/.config/autostart/wallpaper.desktop << 'EOF'
