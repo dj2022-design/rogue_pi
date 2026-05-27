@@ -37,11 +37,39 @@ sudo reboot
 
 ---
 
-## 2. Audio Setup (AB13X USB Audio)
+## 2. Performance Optimization
+
+### Overclock Pi 4 to 2GHz
+Add to `/boot/firmware/config.txt` under `[all]`:
+```ini
+# Performance optimization
+gpu_mem=256
+over_voltage=6
+arm_freq=2000
+gpu_freq=750
+```
+
+### Disable unused services
+```bash
+# Keep bluetooth enabled (needed for OBD)
+sudo systemctl disable avahi-daemon
+sudo systemctl disable cups 2>/dev/null
+```
+
+### Verify overclock after reboot
+```bash
+vcgencmd measure_clock arm   # should show ~2000000000
+vcgencmd measure_temp        # should stay under 75°C
+vcgencmd get_throttled       # 0x0 = no throttling
+```
+
+---
+
+## 3. Audio Setup (AB13X USB Audio)
 
 ### Set ALSA default output to AB13X
 ```bash
-# Find AB13X card number
+# Find AB13X card number (may change on reboot)
 aplay -l | grep AB13X
 # Example output: card 1: Audio [AB13X USB Audio]
 
@@ -52,22 +80,9 @@ defaults.ctl.card 1
 EOF
 ```
 
-### Set react-carplay audio device
-```bash
-node -e "
-const fs = require('fs');
-const config = JSON.parse(fs.readFileSync('/home/fjiang/.config/react-carplay/config.json'));
-config.audioDevice = 'AB13X USB Audio';
-fs.writeFileSync('/home/fjiang/.config/react-carplay/config.json', JSON.stringify(config));
-console.log('done');
-"
-```
-
-> Note: AB13X card number may change on reboot. Run `aplay -l | grep AB13X` to verify.
-
 ---
 
-## 3. react-carplay Build
+## 4. react-carplay Build
 
 ### Clone
 ```bash
@@ -76,8 +91,6 @@ cd react-carplay
 ```
 
 ### Fix pcm-ringbuf-player (TypeScript 5.x incompatibility)
-Node.js 20 ships with TypeScript 5.x which has stricter ArrayBuffer type checking.
-
 ```bash
 git clone https://github.com/rhysmorgan134/pcm-ringbuf-player.git ~/pcm-ringbuf-player
 cd ~/pcm-ringbuf-player
@@ -101,6 +114,54 @@ npm install ringbuf.js --legacy-peer-deps
 sed -i 's/  systemPreferences.askForMediaAccess("microphone")/  if (process.platform === "darwin") systemPreferences.askForMediaAccess("microphone")/' src/main/index.ts
 ```
 
+### Remove snap from build targets (fails on arm64)
+```bash
+sed -i '/    - snap/d' ~/react-carplay/electron-builder.yml
+sed -i '/    - deb/d' ~/react-carplay/electron-builder.yml
+```
+
+### Wallpaper background (replaces white loading screen)
+```bash
+cp ~/wallpaper/minion.png ~/react-carplay/src/renderer/public/minion.png
+
+cat > ~/react-carplay/src/renderer/src/App.css << 'EOF'
+.App {
+    text-align: center;
+}
+html, body {
+    margin: 0px;
+    padding: 0px;
+    width: 100%;
+    height: 100%;
+    background-color: #000;
+    background-image: url('/minion.png');
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+}
+#root {
+    width: 100%;
+    height: 100%;
+}
+.App-header {
+    background-color: #282c34;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-size: calc(10px + 2vmin);
+    color: white;
+}
+@media (prefers-color-scheme: dark) {
+  body { background-color: #000; color: white; }
+}
+@media (prefers-color-scheme: light) {
+  body { background-color: #000; color: white; }
+}
+EOF
+```
+
 ### Build
 ```bash
 npx electron-vite build
@@ -110,16 +171,18 @@ npx electron-builder --linux --arm64
 
 Built app: `dist/linux-arm64-unpacked/react-carplay`
 
-### Set display resolution and audio in config
+### react-carplay config
 ```bash
 node -e "
 const fs = require('fs');
 const config = JSON.parse(fs.readFileSync('/home/fjiang/.config/react-carplay/config.json'));
-config.width = 1920;
-config.height = 1080;
+config.width = 1280;
+config.height = 720;
 config.fps = 30;
 config.dpi = 160;
 config.audioDevice = 'AB13X USB Audio';
+config.wifiType = '5ghz';
+config.packetMax = 131072;
 fs.writeFileSync('/home/fjiang/.config/react-carplay/config.json', JSON.stringify(config));
 console.log('done');
 "
@@ -127,32 +190,34 @@ console.log('done');
 
 ---
 
-## 4. Start Script
+## 5. Desktop Wallpaper
+```bash
+mkdir -p ~/.config/autostart
+cat > ~/.config/autostart/wallpaper.desktop << 'EOF'
+[Desktop Entry]
+Type=Application
+Name=Wallpaper
+Exec=feh --bg-fill /home/fjiang/wallpaper/minion.png
+EOF
+```
+
+---
+
+## 6. Start Script
 ```bash
 cat > ~/start-carplay.sh << 'EOF'
 #!/bin/bash
 export DISPLAY=:0
 export HOME=/home/fjiang
-
-# Set AB13X as default audio output
-sleep 3
-SINK_ID=$(wpctl status | grep "AB13X USB Audio Analog Stereo" | grep -v "Source" | awk '{print $2}' | tr -d '.' | head -1)
-if [ -n "$SINK_ID" ]; then
-    wpctl set-default $SINK_ID
-    wpctl set-volume $SINK_ID 0.8
-fi
-
-/home/fjiang/react-carplay/dist/linux-arm64-unpacked/react-carplay \
-  --no-sandbox \
-  --remote-debugging-port=9222 \
-  --remote-allow-origins=http://localhost:9222
+feh --bg-fill /home/fjiang/wallpaper/minion.png &
+/home/fjiang/react-carplay/dist/linux-arm64-unpacked/react-carplay --no-sandbox
 EOF
 chmod +x ~/start-carplay.sh
 ```
 
 ---
 
-## 5. Systemd Autostart
+## 7. Systemd Autostart
 ```bash
 sudo tee /etc/systemd/system/carplay.service << 'EOF'
 [Unit]
@@ -179,8 +244,11 @@ sudo systemctl start carplay
 
 ---
 
-## 6. Remote Debugging
+## 8. Remote Debugging (optional)
 ```bash
+# Add to start-carplay.sh flags:
+# --remote-debugging-port=9222 --remote-allow-origins=http://localhost:9222
+
 # SSH tunnel from dev machine:
 ssh -L 9222:localhost:9222 fjiang@<pi-ip>
 
@@ -192,5 +260,7 @@ ssh -L 9222:localhost:9222 fjiang@<pi-ip>
 ## Notes
 - react-carplay source: https://github.com/rhysmorgan134/react-carplay
 - Auto Box connects via USB for initial pairing, then uses WiFi for wireless CarPlay
-- AppImage build fails on Pi, use `dist/linux-arm64-unpacked/` instead
-- AB13X card number changes on reboot, ALSA config uses card 1 (verify with `aplay -l`)
+- AppImage build may fail on Pi, use `dist/linux-arm64-unpacked/` directly
+- AB13X card number may change on reboot, verify with `aplay -l | grep AB13X`
+- 1280x720 recommended over 1920x1080 for better performance on Pi 4
+- gbm_wrapper errors in logs are normal on Pi 4, do not affect functionality
